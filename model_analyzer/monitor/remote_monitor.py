@@ -33,8 +33,9 @@ logger = logging.getLogger(LOGGER_NAME)
 
 class RemoteMonitor(Monitor):
     """
-    Requests metrics from Triton's metrics
-    endpoint
+    Requests metrics from a metrics endpoint, either from Triton's
+    metrics endpoint (NVIDIA, nv_gpu_* metrics) or from Ascend's
+    npu-exporter (npu_chip_info_* metrics).
     """
 
     gpu_metrics = {
@@ -42,6 +43,19 @@ class RemoteMonitor(Monitor):
         "nv_gpu_memory_used_bytes": GPUUsedMemory,
         "nv_gpu_power_usage": GPUPowerUsage,
         "nv_gpu_memory_total_bytes": GPUFreeMemory,
+        # npu-exporter metrics (https://gitee.com/ascend/mind-cluster),
+        # used on Ascend for remote deployments. HBM values are in MB and
+        # power in W, so no conversion is needed.
+        "npu_chip_info_utilization": GPUUtilization,
+        "npu_chip_info_hbm_used_memory": GPUUsedMemory,
+        "npu_chip_info_power": GPUPowerUsage,
+    }
+
+    # Metrics used to compute free memory; the device identifier label
+    # differs between the two metric families.
+    free_memory_metrics = {
+        "nv_gpu_memory_total_bytes",
+        "npu_chip_info_hbm_total_memory",
     }
 
     def __init__(self, metrics_url, frequency, metrics):
@@ -86,41 +100,72 @@ class RemoteMonitor(Monitor):
 
         for response in self._metrics_responses:
             metrics = text_string_to_metric_families(response)
-            processed_gpu_used_memory = False
-            calculate_free_memory_after_pass = False
-            gpu_memory_used_bytes = None
+            nv_used_memory = None
+            nv_calculate_free_memory_after_pass = False
+            nv_total_memory_metric = None
+            npu_used_memory_by_device = {}
+            npu_free_memory_samples = []
+
             for metric in metrics:
-                if (
-                    metric.name in self.gpu_metrics
-                    and self.gpu_metrics[metric.name] in self._metrics
-                ):
-                    for sample in metric.samples:
-                        if sample.name == "nv_gpu_memory_used_bytes":
-                            processed_gpu_used_memory = True
-                            gpu_memory_used_bytes = sample.value
-                            self._create_and_add_record(
-                                records, sample, gpu_memory_used_bytes // 1.0e6
-                            )
-                        elif sample.name == "nv_gpu_memory_total_bytes":
-                            if processed_gpu_used_memory:
+                for sample in metric.samples:
+                    name = sample.name
+                    if name in self.free_memory_metrics:
+                        if GPUFreeMemory not in self._metrics:
+                            continue
+                        if name == "nv_gpu_memory_total_bytes":
+                            if nv_used_memory is not None:
                                 self._create_and_add_record(
                                     records,
                                     sample,
-                                    (sample.value - gpu_memory_used_bytes) // 1.0e6,
+                                    (sample.value - nv_used_memory) // 1.0e6,
                                 )
                             else:
-                                total_memory_metric = metric
-                                calculate_free_memory_after_pass = True
-                        elif sample.name == "nv_gpu_utilization":
+                                nv_total_memory_metric = metric
+                                nv_calculate_free_memory_after_pass = True
+                        else:  # npu_chip_info_hbm_total_memory
+                            if sample.labels["id"] in npu_used_memory_by_device:
+                                self._create_and_add_record(
+                                    records,
+                                    sample,
+                                    sample.value
+                                    - npu_used_memory_by_device[sample.labels["id"]],
+                                )
+                            else:
+                                npu_free_memory_samples.append(sample)
+                    elif (
+                        name in self.gpu_metrics
+                        and self.gpu_metrics[name] in self._metrics
+                    ):
+                        if name == "nv_gpu_memory_used_bytes":
+                            nv_used_memory = sample.value
+                            self._create_and_add_record(
+                                records, sample, nv_used_memory // 1.0e6
+                            )
+                        elif name == "nv_gpu_utilization":
                             self._create_and_add_record(
                                 records, sample, sample.value * 100
                             )
-                        else:
+                        elif name == "npu_chip_info_hbm_used_memory":
+                            npu_used_memory_by_device[sample.labels["id"]] = (
+                                sample.value
+                            )
                             self._create_and_add_record(records, sample, sample.value)
-            if calculate_free_memory_after_pass:
-                for sample in total_memory_metric.samples:
+                        else:
+                            # nv_gpu_power_usage, npu_chip_info_utilization,
+                            # npu_chip_info_power
+                            self._create_and_add_record(records, sample, sample.value)
+
+            if nv_calculate_free_memory_after_pass:
+                for sample in nv_total_memory_metric.samples:
                     self._create_and_add_record(
-                        records, sample, (sample.value - gpu_memory_used_bytes) // 1.0e6
+                        records, sample, (sample.value - nv_used_memory) // 1.0e6
+                    )
+            for sample in npu_free_memory_samples:
+                if sample.labels["id"] in npu_used_memory_by_device:
+                    self._create_and_add_record(
+                        records,
+                        sample,
+                        sample.value - npu_used_memory_by_device[sample.labels["id"]],
                     )
 
         return records
@@ -130,8 +175,8 @@ class RemoteMonitor(Monitor):
         Adds a record to given dict
         """
 
+        record_type = self.gpu_metrics.get(sample.name, GPUFreeMemory)
+        device_label = "gpu_uuid" if sample.name.startswith("nv_") else "id"
         records.append(
-            self.gpu_metrics[sample.name](
-                value=sample_value, device_uuid=sample.labels["gpu_uuid"]
-            )
+            record_type(value=sample_value, device_uuid=sample.labels[device_label])
         )
