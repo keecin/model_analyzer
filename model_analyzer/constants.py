@@ -54,7 +54,10 @@ PERF_ANALYZER_MINIMUM_REQUEST_COUNT = 50
 SECONDS_TO_MILLISECONDS_MULTIPLIER = 1000
 
 # Triton Server
-SERVER_OUTPUT_TIMEOUT_SECS = 5
+# Grace period given to the tritonserver process to exit gracefully on
+# SIGTERM before it is force-killed. Cleanup of CANN/NPU resources can
+# take a while on Ascend, so keep this generous.
+SERVER_OUTPUT_TIMEOUT_SECS = 60
 
 # Logging
 LOGGER_NAME = "model_analyzer_logger"
