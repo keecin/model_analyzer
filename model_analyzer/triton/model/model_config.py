@@ -22,7 +22,6 @@ from typing import Any, Dict, List, Optional
 
 from google.protobuf import json_format, text_format
 from google.protobuf.descriptor import FieldDescriptor
-from numba import cuda
 from tritonclient.grpc import model_config_pb2
 
 from model_analyzer.config.input.config_command_profile import ConfigCommandProfile
@@ -30,6 +29,7 @@ from model_analyzer.config.input.objects.config_model_profile_spec import (
     ConfigModelProfileSpec,
 )
 from model_analyzer.device.gpu_device import GPUDevice
+from model_analyzer.device.platform import accelerator_is_available
 from model_analyzer.model_analyzer_exceptions import TritonModelAnalyzerException
 from model_analyzer.triton.client.client import TritonClient
 from model_analyzer.triton.server.server_factory import TritonServerFactory
@@ -524,7 +524,7 @@ class ModelConfig:
         model_config = self.get_config()
 
         # TODO change when remote mode is fixed
-        default_kind = "GPU" if cuda.is_available() else "CPU"
+        default_kind = "GPU" if accelerator_is_available() else "CPU"
         default_count = 1
 
         instance_group_list: List[Dict[str, Any]] = [{}]

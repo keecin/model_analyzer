@@ -22,7 +22,9 @@ from .mock_dcgm_agent import TEST_PCI_BUS_ID
 
 class MockNumba(MockBase):
     """
-    Mocks numba class
+    Mocks numba class. Also patches the platform-neutral
+    accelerator_is_available() helper (which replaces direct
+    numba.cuda.is_available() calls) in modules that use it.
     """
 
     def __init__(self, mock_paths, is_available=True):
@@ -52,8 +54,17 @@ class MockNumba(MockBase):
         self._patchers_numba = {}
         self._numba_mocks = {}
 
+        import importlib
+
         for path in mock_paths:
-            self._patchers_numba[path] = patch(f"{path}.numba", Mock(**numba_attrs))
+            module = importlib.import_module(path)
+            if hasattr(module, "numba"):
+                self._patchers_numba[path] = patch(f"{path}.numba", Mock(**numba_attrs))
+            if hasattr(module, "accelerator_is_available"):
+                self._patchers_numba[f"{path}.accelerator_is_available"] = patch(
+                    f"{path}.accelerator_is_available",
+                    MagicMock(return_value=is_available),
+                )
         super().__init__()
         self._fill_patchers()
 

@@ -7,7 +7,6 @@ import logging
 import os
 from copy import deepcopy
 
-import numba.cuda
 import psutil
 from google.protobuf.descriptor import FieldDescriptor
 from tritonclient.grpc.model_config_pb2 import ModelConfig
@@ -19,6 +18,7 @@ from model_analyzer.config.input.config_utils import (
     parent_path_validator,
 )
 from model_analyzer.constants import LOGGER_NAME
+from model_analyzer.device.platform import accelerator_is_available
 from model_analyzer.model_analyzer_exceptions import TritonModelAnalyzerException
 from model_analyzer.perf_analyzer.genai_perf_config import GenaiPerfConfig
 from model_analyzer.perf_analyzer.perf_config import PerfAnalyzerConfig
@@ -264,7 +264,9 @@ class ConfigCommandProfile(ConfigCommand):
                 field_type=ConfigListString(),
                 default_value=DEFAULT_GPUS,
                 description="List of GPU UUIDs to be used for the profiling. "
-                "Use 'all' to profile all the GPUs visible by CUDA.",
+                "Use 'all' to profile all the GPUs visible by CUDA. "
+                "On Ascend, the list contains NPU logical device ids "
+                "(as shown by npu-smi) or card serial numbers instead.",
             )
         )
         self._add_config(
@@ -284,7 +286,8 @@ class ConfigCommandProfile(ConfigCommand):
                 flags=["--dcgm-disable"],
                 parser_args={"action": "store_true"},
                 default_value=DEFAULT_DCGM_DISABLE,
-                description="Disables DCGM, which prevents obtaining information about GPUs",
+                description="Disables DCGM/DCMI, which prevents obtaining "
+                "information about GPUs/NPUs",
             )
         )
         self._add_config(
@@ -1525,7 +1528,7 @@ class ConfigCommandProfile(ConfigCommand):
         """
         cpu_only = False
         if self.triton_launch_mode != "remote" and (
-            len(self.gpus) == 0 or not numba.cuda.is_available()
+            len(self.gpus) == 0 or not accelerator_is_available()
         ):
             cpu_only = True
 
