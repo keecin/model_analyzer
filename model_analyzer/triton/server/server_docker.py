@@ -23,6 +23,7 @@ from subprocess import DEVNULL
 import docker
 
 from model_analyzer.constants import LOGGER_NAME
+from model_analyzer.device.platform import is_ascend_platform
 from model_analyzer.model_analyzer_exceptions import TritonModelAnalyzerException
 
 from .server import TritonServer
@@ -92,19 +93,32 @@ class TritonServerDocker(TritonServer):
 
         # List GPUs to be mounted and used inside docker container
         devices = []
-        if len(self._gpus):
-            devices = [
-                docker.types.DeviceRequest(
-                    device_ids=[gpu.device_uuid() for gpu in self._gpus],
-                    capabilities=[["gpu"]],
+        if is_ascend_platform():
+            # On Ascend, NPU devices are exposed to the container by the
+            # ascend-docker-runtime, which is configured through the
+            # ASCEND_VISIBLE_DEVICES environment variable (logical device
+            # ids). Devices inside the container are renumbered starting
+            # from 0, so the runtime visibility env var must not be set.
+            env_cmds = []
+            if len(self._gpus):
+                env_cmds.append(
+                    "ASCEND_VISIBLE_DEVICES="
+                    f"{','.join([str(gpu.device_id()) for gpu in self._gpus])}"
                 )
+        else:
+            if len(self._gpus):
+                devices = [
+                    docker.types.DeviceRequest(
+                        device_ids=[gpu.device_uuid() for gpu in self._gpus],
+                        capabilities=[["gpu"]],
+                    )
+                ]
+            env_cmds = [
+                f"CUDA_VISIBLE_DEVICES={','.join([gpu.device_uuid() for gpu in self._gpus])}"
             ]
 
         # Set environment inside container.
         # Supports only strings, and value lookups/concats
-        env_cmds = [
-            f"CUDA_VISIBLE_DEVICES={','.join([gpu.device_uuid() for gpu in self._gpus])}"
-        ]
         if env:
             # Set all environment variables inside the container
             for env_variable in list(env):

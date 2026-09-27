@@ -23,6 +23,7 @@ from subprocess import DEVNULL, STDOUT, Popen, TimeoutExpired
 import psutil
 
 from model_analyzer.constants import LOGGER_NAME, SERVER_OUTPUT_TIMEOUT_SECS
+from model_analyzer.device.platform import device_visibility_env
 from model_analyzer.model_analyzer_exceptions import TritonModelAnalyzerException
 
 from .server import TritonServer
@@ -84,10 +85,10 @@ class TritonServerLocal(TritonServer):
                         # Collect the ones that need lookups to give to the shell
                         triton_env[variable] = os.path.expandvars(value)
 
-            # List GPUs to be used by tritonserver
-            triton_env["CUDA_VISIBLE_DEVICES"] = ",".join(
-                [gpu.device_uuid() for gpu in self._gpus]
-            )
+            # List the devices to be used by tritonserver
+            # (CUDA_VISIBLE_DEVICES on NVIDIA, ASCEND_RT_VISIBLE_DEVICES on
+            # Ascend)
+            triton_env.update(device_visibility_env(self._gpus))
 
             if self._log_path:
                 try:
