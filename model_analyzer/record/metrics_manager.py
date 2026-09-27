@@ -8,7 +8,6 @@ import time
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
-import numba
 import requests
 from prometheus_client.parser import text_string_to_metric_families
 
@@ -17,9 +16,16 @@ from model_analyzer.config.generate.base_model_config_generator import (
 )
 from model_analyzer.config.run.run_config import RunConfig
 from model_analyzer.constants import LOGGER_NAME, PA_ERROR_LOG_FILENAME
+from model_analyzer.device.platform import (
+    GPU_METRIC_RECORD_TYPES,
+    accelerator_is_available,
+    device_visibility_env,
+    get_device_info,
+    is_ascend_platform,
+)
 from model_analyzer.model_analyzer_exceptions import TritonModelAnalyzerException
 from model_analyzer.monitor.cpu_monitor import CPUMonitor
-from model_analyzer.monitor.dcgm.dcgm_monitor import DCGMMonitor
+from model_analyzer.monitor.dcmi.dcmi_monitor import DCMIMonitor
 from model_analyzer.monitor.remote_monitor import RemoteMonitor
 from model_analyzer.output.file_writer import FileWriter
 from model_analyzer.perf_analyzer.perf_analyzer import PerfAnalyzer
@@ -146,17 +152,9 @@ class MetricsManager:
         if self._state_manager.starting_fresh_run() or gpu_info is None:
             gpu_info = {}
 
-        for i in range(len(self._gpus)):
-            if self._gpus[i].device_uuid() not in gpu_info:
-                device_info = {}
-                device = numba.cuda.list_devices()[i]
-                device_info["name"] = str(device.name, encoding="utf-8")
-                with device:
-                    # convert bytes to GB
-                    device_info["total_memory"] = (
-                        numba.cuda.current_context().get_memory_info().total
-                    )
-                gpu_info[self._gpus[i].device_uuid()] = device_info
+        for i, gpu in enumerate(self._gpus):
+            if gpu.device_uuid() not in gpu_info:
+                gpu_info[gpu.device_uuid()] = get_device_info(gpu, i)
 
         self._state_manager.set_state_variable("MetricsManager.gpus", gpu_info)
 
@@ -194,7 +192,7 @@ class MetricsManager:
         TritonModelAnalyzerException
         """
 
-        capture_gpu_metrics = numba.cuda.is_available()
+        capture_gpu_metrics = accelerator_is_available()
         self._start_monitors(capture_gpu_metrics=capture_gpu_metrics)
         time.sleep(self._config.duration_seconds)
         if capture_gpu_metrics or self._config.always_report_gpu_metrics:
@@ -516,11 +514,21 @@ class MetricsManager:
         self._gpu_monitor = None
         if capture_gpu_metrics:
             try:
-                self._gpu_monitor = RemoteMonitor(
-                    self._config.triton_metrics_url,
-                    self._config.monitoring_interval,
-                    self._gpu_metrics,
-                )
+                if is_ascend_platform() and self._config.triton_launch_mode != "remote":
+                    # On Ascend, Triton Server does not expose device metrics
+                    # on its metrics endpoint, so the devices are sampled
+                    # directly through DCMI instead.
+                    self._gpu_monitor = DCMIMonitor(
+                        self._gpus,
+                        self._config.monitoring_interval,
+                        self._gpu_metrics,
+                    )
+                else:
+                    self._gpu_monitor = RemoteMonitor(
+                        self._config.triton_metrics_url,
+                        self._config.monitoring_interval,
+                        self._gpu_metrics,
+                    )
 
                 self._gpu_monitor.start_recording_metrics()
             except TritonModelAnalyzerException:
@@ -587,11 +595,9 @@ class MetricsManager:
 
         perf_analyzer_env = run_config.triton_environment()
 
-        # IF running with C_API, need to set CUDA_VISIBLE_DEVICES here
+        # IF running with C_API, need to set the device visibility env var here
         if self._config.triton_launch_mode == "c_api":
-            perf_analyzer_env["CUDA_VISIBLE_DEVICES"] = ",".join(
-                [gpu.device_uuid() for gpu in self._gpus]
-            )
+            perf_analyzer_env.update(device_visibility_env(self._gpus))
 
         perf_analyzer = PerfAnalyzer(
             path=self._config.perf_analyzer_path,
@@ -842,7 +848,7 @@ class MetricsManager:
         False otherwise
         """
         metric = MetricsManager.get_metric_types([tag])[0]
-        return metric in DCGMMonitor.model_analyzer_to_dcgm_field
+        return metric in GPU_METRIC_RECORD_TYPES
 
     @staticmethod
     def is_perf_analyzer_metric(tag):

@@ -21,7 +21,7 @@ import sys
 from pprint import pformat
 
 from model_analyzer.constants import LOGGER_NAME
-from model_analyzer.device.gpu_device_factory import GPUDeviceFactory
+from model_analyzer.device.platform import get_device_factory
 
 from .analyzer import Analyzer
 from .cli.cli import CLI
@@ -263,7 +263,7 @@ def main():
             if config.dcgm_disable:
                 gpus = []
             else:
-                gpus = GPUDeviceFactory().verify_requested_gpus(config.gpus)
+                gpus = get_device_factory().verify_requested_gpus(config.gpus)
 
             # Check/create output model repository
             create_output_model_repository(config)
